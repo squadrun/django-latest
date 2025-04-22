@@ -8,6 +8,8 @@ import asyncio
 import threading
 import warnings
 from contextlib import contextmanager
+import logging
+import traceback
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -85,6 +87,8 @@ def _get_varchar_column(data):
         return "varchar"
     return "varchar(%(max_length)s)" % data
 
+
+logger = logging.getLogger('subtxn')
 
 class DatabaseWrapper(BaseDatabaseWrapper):
     vendor = "postgresql"
@@ -179,6 +183,12 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     ops_class = DatabaseOperations
     # PostgreSQL backend-specific attributes.
     _named_cursor_idx = 0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._subtransaction_count = 0
+        self._subtransaction_threshold = 10
+        self._logged_transactions = set()
 
     def get_database_version(self):
         """
@@ -438,6 +448,33 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     def make_debug_cursor(self, cursor):
         return CursorDebugWrapper(cursor, self)
+
+    def _savepoint(self, sid):
+        super()._savepoint(sid)
+        self._subtransaction_count += 1
+        if self._subtransaction_count >= 55:
+            # Get the parent transaction ID (first part of the savepoint ID)
+            parent_txn = sid.split('_')[0]
+            if parent_txn not in self._logged_transactions:
+                self._logged_transactions.add(parent_txn)
+                stacktrace = ''.join(traceback.format_stack())
+                logger.error(
+                    "High number of subtransactions detected: {}".format(self._subtransaction_count),
+                    extra=dict(data=dict(stacktrace=stacktrace))
+                )
+
+    def _savepoint_commit(self, sid):
+        super()._savepoint_commit(sid)
+        self._subtransaction_count -= 1
+
+    def _savepoint_rollback(self, sid):
+        super()._savepoint_rollback(sid)
+        self._subtransaction_count -= 1
+
+    def clean_savepoints(self):
+        super().clean_savepoints()
+        self._subtransaction_count = 0
+        self._logged_transactions.clear()
 
 
 if is_psycopg3:
