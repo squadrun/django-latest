@@ -187,7 +187,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._subtransaction_count = 0
-        self._subtransaction_threshold = 10
         self._logged_transactions = set()
 
     def get_database_version(self):
